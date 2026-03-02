@@ -388,14 +388,19 @@ def main():
     if painting_info:
         st.subheader("About This Painting")
         st.markdown(painting_info)
+        st.markdown(f"**Name:** {current_title}")
+        st.markdown(f"**Artist:** {current_artist}")
+        st.markdown(f"**Date:** {current_date}")
+        st.markdown(f"**Style:** {current_style}")
+
+    st.subheader("Compare this painting to one painted around the same time?")
+    with st.expander("compare"):
+        render_columns(image, current_title, current_artist, current_style, current_date,
+                       pred_image_url, pred_title, pred_artist, pred_style, pred_date)
+
         st.markdown("---")
-
-    render_columns(image, current_title, current_artist, current_style, current_date,
-                   pred_image_url, pred_title, pred_artist, pred_style, pred_date)
-
-    st.markdown("---")
-    st.subheader("Comparative Historical Analysis")
-    st.markdown(analysis_text)
+        st.subheader("Comparative Historical Analysis")
+        st.markdown(analysis_text)
 
 
 if __name__ == "__main__":
