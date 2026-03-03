@@ -506,9 +506,9 @@ def verify_images_with_ai(uploaded_image_base64: str, images: list, openai_key: 
         if is_confident:
             return best["image"], True
         else:
-            # If not confident, return list of top 5 for slideshow
-            top_5 = verification_results[:5]
-            return [r["image"] for r in top_5], False
+            # If not confident, return list of top 3 for slideshow
+            top_3 = verification_results[:3]
+            return [r["image"] for r in top_3], False
     
     return None, False
 
@@ -556,15 +556,18 @@ def render_columns(image, current_title, current_artist, current_style, current_
         elif isinstance(pred_image_url, list) and pred_image_url:
             st.info("⚠️ **Note:** Images might be incorrect. Please double-check!")
             # Slideshow of possible matches
-            st.write("**Possible matches from Wikimedia (scroll to view all):**")
-            cols = st.columns(min(len(pred_image_url), 3))
-            for idx, img in enumerate(pred_image_url):
-                with cols[idx % len(cols)]:
-                    if img.get("thumburl"):
-                        st.image(img["thumburl"], use_container_width=True, caption=f"Option {idx+1}")
-                    elif img.get("url"):
-                        st.image(img["url"], use_container_width=True, caption=f"Option {idx+1}")
-                    st.caption(img.get("title", "Unknown"))
+            st.write("**Possible matches from Wikimedia:**")
+            show_images = pred_image_url[:3]
+            for i in range(0, len(show_images), 2):
+                row_images = show_images[i:i+2]
+                cols = st.columns(2)
+                for j, img in enumerate(row_images):
+                    with cols[j]:
+                        if img.get("thumburl"):
+                            st.image(img["thumburl"], use_container_width=True, caption=f"Option {i+j+1}")
+                        elif img.get("url"):
+                            st.image(img["url"], use_container_width=True, caption=f"Option {i+j+1}")
+                        st.caption(img.get("title", "Unknown"))
         else:
             st.info("Predecessor image not found in Wikimedia Commons.")
         pred_text = format_predecessor_text(pred_title, pred_artist, pred_style, pred_date)
