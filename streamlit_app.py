@@ -9,9 +9,45 @@ import time
 import urllib.parse
 import re
 from PIL import ExifTags
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 st.set_page_config(page_title="Art a Look", layout="wide")
+
+
+# ---------- decorative SVG backgrounds ----------
+def _load_svg_as_data_uri(path: str) -> str:
+    with open(path, "r") as f:
+        svg_text = f.read()
+    encoded = base64.b64encode(svg_text.encode("utf-8")).decode("utf-8")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+_top_right_uri = _load_svg_as_data_uri("assets/Right pattern.svg")
+_bottom_left_uri = _load_svg_as_data_uri("assets/Left pattern.svg")
+
+st.html(f"""
+<style>
+.svg-top-right,
+.svg-bottom-left {{
+    z-index: 0;
+    pointer-events: none;
+    width: 240px;
+    height: auto;
+}}
+.svg-top-right {{
+    position: absolute;
+    top: -6rem;
+    right: -5rem;
+}}
+.svg-bottom-left {{
+    position: fixed;
+    bottom: 0;
+    left: 0;
+}}
+</style>
+<img class="svg-top-right" src="{_top_right_uri}" />
+<img class="svg-bottom-left" src="{_bottom_left_uri}" />
+""")
 
 
 # ---------- configuration / constants ----------
@@ -121,18 +157,28 @@ def fix_image_orientation(image: Image.Image) -> Image.Image:
         return image
 
 
-def get_painting_info(title: str, artist: str, openai_key: str) -> str:
-    """Ask OpenAI for a concise description of a painting.
+@st.cache_data(show_spinner=False)
+def get_supplementary_info(title: str, artist: str, style: str, openai_key: str) -> dict:
+    """Single API call to get painting info, art movement info and fun fact.
 
-    If the model cannot find the work, returns a fallback string.
+    Combines three previous separate calls into one to reduce latency.
+    Returns dict with keys: painting_info, movement_info, fun_fact.
     """
     if not openai_key or not openai_key.strip():
-        raise ValueError("Missing or empty OpenAI API key for painting info request.")
+        return {"painting_info": "", "movement_info": "", "fun_fact": ""}
 
-    prompt = (
-        f"Provide a very brief (1-2 sentence) description of the painting '" +
-        f"{title}' by {artist if artist else 'the stated artist'}. "
-        "If you do not know this work, respond with 'Information not available.'"
+    prompt_parts = []
+    prompt_parts.append(
+        f"About the painting '{title}' by {artist if artist else 'unknown artist'}:\n"
+        f"1) Provide a very brief (1-2 sentence) description of this painting.\n"
+        f"2) Provide a brief (2-3 sentence) description of the '{style}' art movement, "
+        f"including key characteristics and time period.\n"
+        f"3) Provide one engaging fun-fact sentence about this painting."
+    )
+
+    prompt = "\n".join(prompt_parts) + (
+        "\n\nReturn ONLY valid JSON with this structure (no markdown):\n"
+        '{"painting_info": "...", "movement_info": "...", "fun_fact": "..."}'
     )
 
     url = "https://api.openai.com/v1/chat/completions"
@@ -140,85 +186,29 @@ def get_painting_info(title: str, artist: str, openai_key: str) -> str:
     payload = {
         "model": "gpt-4o",
         "messages": [
-            {"role": "system", "content": "You are a concise art encyclopedia."},
+            {"role": "system", "content": "You are a concise art encyclopedia. Always return valid JSON."},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.3,
-        "max_tokens": 150,
+        "temperature": 0.4,
+        "max_tokens": 400,
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    return text or "Information not available."
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        result = json.loads(text)
+        return {
+            "painting_info": result.get("painting_info", ""),
+            "movement_info": result.get("movement_info", ""),
+            "fun_fact": result.get("fun_fact", ""),
+        }
+    except Exception:
+        return {"painting_info": "", "movement_info": "", "fun_fact": ""}
 
 
-def get_art_movement_info(movement: str, openai_key: str) -> str:
-    """Ask OpenAI for a concise description of an art movement.
-
-    If the model cannot find the movement, returns a fallback string.
-    """
-    if not openai_key or not openai_key.strip():
-        raise ValueError("Missing or empty OpenAI API key for art movement info request.")
-
-    prompt = (
-        f"Provide a very brief (2-3 sentence) description of the '{movement}' art movement, "
-        "including its key characteristics and time period. "
-        "If you do not know this movement, respond with 'Information not available.'"
-    )
-
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "gpt-4o",
-        "messages": [
-            {"role": "system", "content": "You are a concise art encyclopedia."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 200,
-    }
-
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    return text or "Information not available."
-
-
-def get_fun_fact(title: str, artist: str, openai_key: str) -> str:
-    """Ask OpenAI for a fun fact about a painting.
-
-    Returns a single-sentence tidbit or a placeholder if none is available.
-    """
-    if not openai_key or not openai_key.strip():
-        raise ValueError("Missing or empty OpenAI API key for fun fact request.")
-
-    prompt = (
-        f"Provide one engaging fun fact about the painting '{title}' by {artist}. "
-        "Keep it to a single sentence. If no fact is available, reply 'No fun fact available.'"
-    )
-
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "gpt-4o",
-        "messages": [
-            {"role": "system", "content": "You are a friendly art guide."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 60,
-    }
-
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    return text or "No fun fact available."
-
-
+@st.cache_data(show_spinner=False)
 def analyze_art(image_base64: str, openai_key: str) -> dict:
     """Send the uploaded image to OpenAI and parse the JSON response.
 
@@ -345,7 +335,7 @@ def analyze_art(image_base64: str, openai_key: str) -> dict:
 
 
 def get_wikimedia_images(query: str) -> list:
-    """Return up to 10 images from Wikimedia Commons with their metadata.
+    """Return up to 5 images from Wikimedia Commons with their metadata.
     
     Returns a list of dicts with keys: url, thumburl, title, description
     """
@@ -360,7 +350,7 @@ def get_wikimedia_images(query: str) -> list:
         "generator": "search",
         "gsrnamespace": 6,
         "gsrsearch": query,
-        "gsrlimit": 10,
+        "gsrlimit": 5,
         "prop": "imageinfo|pageterms",
         "iiprop": "url|size|mime|thumburl|extmetadata",
         "iiurlwidth": 2048,
@@ -388,129 +378,115 @@ def get_wikimedia_images(query: str) -> list:
         return []
 
 
+def _verify_single_image(uploaded_image_base64: str, img_data: dict, openai_key: str) -> dict | None:
+    """Verify a single Wikimedia image against the upload. Used in thread pool."""
+    wikimedia_url = img_data.get("url", "")
+    if not wikimedia_url:
+        return None
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "I will show you two images. The first is a user-uploaded artwork. "
+                            "The second is a candidate image from Wikimedia Commons. "
+                            "Are they the same artwork or showing the same painting? "
+                            "Answer with ONLY 'YES', 'NO', or 'MAYBE' followed by a confidence score 0-100."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{uploaded_image_base64}", "detail": "medium"},
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": wikimedia_url, "detail": "medium"},
+                    },
+                ],
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 20,
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        resp_data = resp.json()
+        response_text = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+        confidence = 0
+        verdict = "NO"
+        if "YES" in response_text.upper():
+            verdict = "YES"
+            match = re.search(r'(\d+)', response_text)
+            confidence = int(match.group(1)) if match else 85
+        elif "MAYBE" in response_text.upper():
+            verdict = "MAYBE"
+            match = re.search(r'(\d+)', response_text)
+            confidence = int(match.group(1)) if match else 50
+
+        return {"image": img_data, "verdict": verdict, "confidence": confidence}
+    except Exception:
+        return None
+
+
 def verify_images_with_ai(uploaded_image_base64: str, images: list, openai_key: str) -> tuple:
-    """Verify which image from Wikimedia matches the uploaded artwork using OpenAI.
-    
-    Returns (verified_image, is_confident) where:
-    - verified_image is the matching image dict or None
-    - is_confident is True if we're confident in the match
+    """Verify which image from Wikimedia matches the uploaded artwork.
+
+    Uses gpt-4o-mini with low-detail images and parallel requests (max 3)
+    to dramatically reduce verification time.
+
+    Returns (verified_image, is_confident).
     """
     if not images or not openai_key:
         return None, False
 
-    # Verify up to 10 images
+    # Only check top 3 candidates (was 10)
+    candidates = [img for img in images[:3] if img.get("url")]
+    if not candidates:
+        return None, False
+
+    # Run verifications in parallel
     verification_results = []
-    
-    for idx, img_data in enumerate(images[:10]):
-        if not img_data.get("url"):
-            continue
-        
-        attempts = 0
-        while attempts < 2:  # Retry once if it fails
-            try:
-                # Use direct URL for wikimedia image (OpenAI supports direct URLs)
-                wikimedia_url = img_data.get("url", "")
-                
-                if not wikimedia_url:
-                    break
-                
-                # Use OpenAI to compare
-                url = "https://api.openai.com/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
-                
-                payload = {
-                    "model": "gpt-4o",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "I will show you two images. The first is a user-uploaded artwork. The second is a candidate image from Wikimedia Commons. Are they the same artwork or showing the same painting? Answer with ONLY 'YES', 'NO', or 'MAYBE' followed by a confidence score 0-100."
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{uploaded_image_base64}"}
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": wikimedia_url}
-                                },
-                            ],
-                        }
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 50,
-                }
-                
-                resp = requests.post(url, headers=headers, json=payload, timeout=60)
-                resp.raise_for_status()
-                resp_data = resp.json()
-                response_text = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                
-                # Parse response
-                confidence = 0
-                verdict = "NO"
-                if "YES" in response_text.upper():
-                    verdict = "YES"
-                    # Extract confidence score
-                    try:
-                        match = re.search(r'(\d+)', response_text)
-                        if match:
-                            confidence = int(match.group(1))
-                    except:
-                        confidence = 85
-                elif "MAYBE" in response_text.upper():
-                    verdict = "MAYBE"
-                    try:
-                        match = re.search(r'(\d+)', response_text)
-                        if match:
-                            confidence = int(match.group(1))
-                    except:
-                        confidence = 50
-                
-                verification_results.append({
-                    "image": img_data,
-                    "verdict": verdict,
-                    "confidence": confidence,
-                    "response": response_text
-                })
-                break  # Success, exit retry loop
-                
-            except Exception as e:
-                attempts += 1
-                if attempts >= 2:
-                    continue  # Move to next image
-                time.sleep(1)  # Wait before retry
-    
-    # Find the best match
-    if verification_results:
-        # Sort by verdict priority and confidence
-        def score_result(result):
-            verdict = result["verdict"]
-            confidence = result["confidence"]
-            if verdict == "YES":
-                return (2, confidence)
-            elif verdict == "MAYBE":
-                return (1, confidence)
-            else:
-                return (0, confidence)
-        
-        verification_results.sort(key=score_result, reverse=True)
-        best = verification_results[0]
-        
-        # Consider it verified if high confidence YES or high confidence MAYBE
-        is_confident = (best["verdict"] == "YES" and best["confidence"] >= 70) or \
-                       (best["verdict"] == "MAYBE" and best["confidence"] >= 85)
-        
-        if is_confident:
-            return best["image"], True
-        else:
-            # If not confident, return list of top 3 for slideshow
-            top_3 = verification_results[:3]
-            return [r["image"] for r in top_3], False
-    
-    return None, False
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_verify_single_image, uploaded_image_base64, img, openai_key): img
+            for img in candidates
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                verification_results.append(result)
+
+    if not verification_results:
+        return None, False
+
+    # Sort by verdict priority and confidence
+    def score_result(r):
+        v = r["verdict"]
+        c = r["confidence"]
+        return (2 if v == "YES" else 1 if v == "MAYBE" else 0, c)
+
+    verification_results.sort(key=score_result, reverse=True)
+    best = verification_results[0]
+
+    is_confident = (
+        (best["verdict"] == "YES" and best["confidence"] >= 70)
+        or (best["verdict"] == "MAYBE" and best["confidence"] >= 85)
+    )
+
+    if is_confident:
+        return best["image"], True
+    else:
+        return [r["image"] for r in verification_results[:3]], False
 
 
 # ---------- presentation helpers ----------
@@ -598,8 +574,15 @@ def main():
     # Fix orientation based on EXIF data before converting to RGB
     image = fix_image_orientation(image)
     image = image.convert("RGB")
+
+    # Resize to max 1024px on longest side before encoding – cuts payload
+    # size and API processing time significantly.
+    MAX_DIM = 1024
+    if max(image.size) > MAX_DIM:
+        image.thumbnail((MAX_DIM, MAX_DIM), Image.LANCZOS)
+
     buffer = BytesIO()
-    image.save(buffer, format="PNG")
+    image.save(buffer, format="PNG", optimize=True)
     b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     with st.spinner("Analyzing provenance..."):
@@ -619,60 +602,51 @@ def main():
     pred_style = analysis.get("predecessor_style", "")
     analysis_text = analysis.get("analysis_text", "No analysis returned.")
 
+    # --- Run supplementary-info and predecessor-image search in parallel ---
     painting_info = ""
-    if current_title and current_title != "Unknown":
-        try:
-            painting_info = get_painting_info(current_title, current_artist, openai_key)
-        except Exception:
-            painting_info = "Information not available."
-
     movement_info = ""
-    if current_style:
-        try:
-            movement_info = get_art_movement_info(current_style, openai_key)
-        except Exception:
-            movement_info = ""
-
     fun_fact = ""
-    if current_title and current_artist:
-        try:
-            fun_fact = get_fun_fact(current_title, current_artist, openai_key)
-        except Exception:
-            fun_fact = ""  # silent failure
-
     pred_image_url = None
     is_image_verified = False
-    
-    if pred_title and pred_artist:
-        with st.spinner("Verifying predecessor image from Wikimedia..."):
-            # Search with both title and artist for more specific results
-            # Try primary search with both title and artist
-            query = f'"{pred_title}" {pred_artist}'
-            images = get_wikimedia_images(query)
-            
-            # If no results, try without quotes
-            if not images:
-                query = f"{pred_title} {pred_artist}"
-                images = get_wikimedia_images(query)
-            
-            # If still no results, try just the title
-            if not images and pred_title:
-                images = get_wikimedia_images(pred_title)
-            
-            if images:
-                result, is_verified = verify_images_with_ai(b64, images, openai_key)
-                is_image_verified = is_verified
-                
-                if is_verified and isinstance(result, dict):
-                    # Single verified image
-                    pred_image_url = result.get("thumburl") or result.get("url")
-                elif result and isinstance(result, list) and len(result) > 0:
-                    # List of possible matches
-                    pred_image_url = result
-                else:
-                    # Fallback: just get first image
-                    first_img = images[0]
-                    pred_image_url = first_img.get("thumburl") or first_img.get("url")
+
+    def _fetch_supplementary():
+        """Single call for painting info + movement info + fun fact."""
+        if current_title and current_title != "Unknown":
+            return get_supplementary_info(current_title, current_artist, current_style, openai_key)
+        return {}
+
+    def _fetch_predecessor_image():
+        """Wikimedia search + AI verification."""
+        if not (pred_title and pred_artist):
+            return None, False
+        query = f'"{pred_title}" {pred_artist}'
+        images = get_wikimedia_images(query)
+        if not images:
+            images = get_wikimedia_images(f"{pred_title} {pred_artist}")
+        if not images and pred_title:
+            images = get_wikimedia_images(pred_title)
+        if not images:
+            return None, False
+        result, is_verified = verify_images_with_ai(b64, images, openai_key)
+        if is_verified and isinstance(result, dict):
+            return result.get("thumburl") or result.get("url"), True
+        elif result and isinstance(result, list) and len(result) > 0:
+            return result, False
+        else:
+            first_img = images[0]
+            return first_img.get("thumburl") or first_img.get("url"), False
+
+    with st.spinner("Fetching details & predecessor image..."):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            sup_future = pool.submit(_fetch_supplementary)
+            img_future = pool.submit(_fetch_predecessor_image)
+
+            sup = sup_future.result()
+            painting_info = sup.get("painting_info", "")
+            movement_info = sup.get("movement_info", "")
+            fun_fact = sup.get("fun_fact", "")
+
+            pred_image_url, is_image_verified = img_future.result()
 
     if painting_info:
         st.subheader("About This Painting")

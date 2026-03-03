@@ -1,2 +1,4 @@
 [theme]
-primaryColor = "#3239FB"
+primaryColor = "#00B4D7"
+font = "Jost:https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,100..900;1,100..900&display=swap"
+backgroundColor = "#FFFDF3"
