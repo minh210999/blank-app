@@ -387,7 +387,7 @@ def _verify_single_image(uploaded_image_base64: str, img_data: dict, openai_key:
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
     payload = {
-        "model": "gpt-4o-mini",
+        "model": "gpt-4o",
         "messages": [
             {
                 "role": "user",
@@ -403,17 +403,17 @@ def _verify_single_image(uploaded_image_base64: str, img_data: dict, openai_key:
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{uploaded_image_base64}", "detail": "medium"},
+                        "image_url": {"url": f"data:image/png;base64,{uploaded_image_base64}", "detail": "low"},
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": wikimedia_url, "detail": "medium"},
+                        "image_url": {"url": wikimedia_url, "detail": "low"},
                     },
                 ],
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 20,
+        "max_tokens": 50,
     }
 
     try:
