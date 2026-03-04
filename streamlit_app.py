@@ -198,7 +198,20 @@ def get_supplementary_info(title: str, artist: str, style: str, openai_key: str)
         resp.raise_for_status()
         data = resp.json()
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        result = json.loads(text)
+        # Strip markdown code fences if present
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            # Attempt to extract JSON object from the response
+            start_idx = text.find("{")
+            end_idx = text.rfind("}")
+            if start_idx >= 0 and end_idx > start_idx:
+                result = json.loads(text[start_idx:end_idx + 1])
+            else:
+                return {"painting_info": "", "movement_info": "", "fun_fact": ""}
         return {
             "painting_info": result.get("painting_info", ""),
             "movement_info": result.get("movement_info", ""),
@@ -648,22 +661,22 @@ def main():
 
             pred_image_url, is_image_verified = img_future.result()
 
-    if painting_info:
-        st.subheader("About This Painting")
-        left, right = st.columns(2, gap="large")
-        with left:
-            st.image(image, use_container_width=True)
-        with right:
+    st.subheader("About This Painting")
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.image(image, use_container_width=True)
+    with right:
+        if painting_info:
             st.markdown(painting_info)
-            st.markdown(f"**Name:** {current_title}")
-            st.markdown(f"**Artist:** {current_artist}")
-            st.markdown(f"**Date:** {current_date}")
-            if movement_info:
-                with st.expander(f"**Movement:** {current_style}"):
-                    st.markdown(movement_info)
-            if fun_fact:
-                with st.expander(f"**Fun Fact**"):
-                    st.markdown(fun_fact)
+        st.markdown(f"**Name:** {current_title}")
+        st.markdown(f"**Artist:** {current_artist}")
+        st.markdown(f"**Date:** {current_date}")
+        if movement_info:
+            with st.expander(f"**Movement:** {current_style}"):
+                st.markdown(movement_info)
+        if fun_fact:
+            with st.expander(f"**Fun Fact**"):
+                st.markdown(fun_fact)
 
     st.subheader("Compare to painting around the same time?")
     with st.expander("**Compare**"):
